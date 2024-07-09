@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using NLog;
+using System.Text.RegularExpressions;
 
 namespace PostProcessor.RabbitMq
 {
@@ -63,7 +64,6 @@ namespace PostProcessor.RabbitMq
                 var body = ea.Body.ToArray();
                 var message = Encoding.UTF8.GetString(body);
                 var deserializedMessage = JsonSerializer.Deserialize<Message>(message);
-
                 var flag = (deserializedMessage.Content != null) ? "NotNull" : "Null";
                 Logger.Info($"\nПолучено сообщение:\nId: {deserializedMessage.Id}\nContent: {flag}\nMessageCurrentTime: {deserializedMessage.MessageCurrentTime}");
 
@@ -124,46 +124,50 @@ namespace PostProcessor.RabbitMq
             }
         }
 
-
         private List<string> SplitMessage(string message, int maxLength)
         {
             var messageParts = new List<string>();
 
-            // Разделители для разбиения сообщения
-            var delimiters = new[] { '.', '!', '?' };
+            // Регулярное выражение для разбиения сообщения на части
+            var pattern = $@"(.{{1,{maxLength}}})(?=\s|$)";
+            var regex = new Regex(pattern, RegexOptions.Singleline);
 
-            while (message.Length > maxLength)
+            // Разбиваем сообщение на части
+            foreach (Match match in regex.Matches(message))
             {
-                // Найти подходящий разделитель в пределах максимальной длины
-                var splitIndex = message.LastIndexOfAny(delimiters, maxLength);
-
-                // Если не удалось найти разделитель, разбиваем на фиксированную длину
-                if (splitIndex == -1)
-                {
-                    splitIndex = maxLength;
-                }
-
-                // Если разделитель найден, включаем его в сообщение
-                if (delimiters.Contains(message[splitIndex]))
-                {
-                    splitIndex++;
-                }
-
-                // Убираем пробелы перед и после сообщения
-                var part = message.Substring(0, splitIndex).Trim();
-                messageParts.Add(part);
-
-                // Оставшаяся часть сообщения
-                message = message.Substring(splitIndex).Trim();
+                messageParts.Add(match.Value); // Добавляем каждую часть
             }
 
-            if (!string.IsNullOrWhiteSpace(message))
+            // Реконструируем сообщение из частей
+            var reconstructedMessage = string.Join(" ", messageParts); // Добавляем пробел между частями
+
+            // Убираем пробелы для проверки длины сообщений
+            var originalMessageNoSpaces = message.Replace(" ", string.Empty);
+            var reconstructedMessageNoSpaces = reconstructedMessage.Replace(" ", string.Empty);
+
+            // Логирование длины для проверки
+            Logger.Info($"Исходная длина сообщения: {message.Length}, Суммарная длина разделенных частей: {messageParts.Sum(part => part.Length)}");
+            Logger.Info($"Длина оригинального сообщения без пробелов: {originalMessageNoSpaces.Length}");
+            Logger.Info($"Длина реконструированного сообщения без пробелов: {reconstructedMessageNoSpaces.Length}");
+
+            // Проверка соответствия длины оригинального и реконструированного сообщений
+            if (reconstructedMessageNoSpaces.Length != originalMessageNoSpaces.Length)
             {
-                messageParts.Add(message);
+                Logger.Error($"Ошибка: суммарная длина частей ({messageParts.Sum(part => part.Length)}) не соответствует исходной длине сообщения ({message.Length}).");
+                Logger.Error($"Длина оригинального сообщения: {message.Length}");
+                Logger.Error($"Длина реконструированного сообщения: {reconstructedMessage.Length}");
+                Logger.Error($"Длина оригинального сообщения без пробелов: {originalMessageNoSpaces.Length}");
+                Logger.Error($"Длина реконструированного сообщения без пробелов: {reconstructedMessageNoSpaces.Length}");
+                throw new InvalidOperationException("Суммарная длина частей не соответствует исходной длине сообщения.");
             }
 
             return messageParts;
         }
+
+
+
+
+
 
         // Класс для представления сообщения.
         public class Message
