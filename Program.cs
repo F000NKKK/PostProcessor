@@ -1,7 +1,9 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using NLog;
+using NLog.Extensions.Logging;
 using PostProcessor.RabbitMq;
-using Microsoft.AspNetCore.Builder;
 
 namespace PostProcessor
 {
@@ -11,6 +13,11 @@ namespace PostProcessor
         {
             var builder = Host.CreateApplicationBuilder(args);
 
+            // Настройка NLog
+            builder.Logging.ClearProviders();
+            builder.Logging.AddNLog("nlog.config");
+
+            // Регистрация RabbitMqService и фонового сервиса
             builder.Services.AddScoped<IRabbitMqService, PostProcessorBackgroundService>();
             builder.Services.AddScoped<IRabbitMqBackgroundService, PostProcessorBackgroundService>();
             builder.Services.AddHostedService<PostProcessorBackgroundService>();
@@ -21,6 +28,8 @@ namespace PostProcessor
 
             app.Run();
 
+            // Завершение записи логов перед закрытием приложения
+            LogManager.Shutdown();
         }
     }
 }

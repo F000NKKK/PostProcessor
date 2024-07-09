@@ -3,11 +3,13 @@ using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using NLog;
 
 namespace PostProcessor.RabbitMq
 {
     public class PostProcessorBackgroundService : BackgroundService, IRabbitMqService, IRabbitMqBackgroundService
     {
+        private static readonly ILogger Logger = LogManager.GetCurrentClassLogger();
         private readonly IConnection _connection;
         private readonly IModel _channel;
         private readonly IServiceProvider _serviceProvider;
@@ -33,7 +35,7 @@ namespace PostProcessor.RabbitMq
         {
             var body = Encoding.UTF8.GetBytes(message);
             _channel.BasicPublish(exchange: "", routingKey: queueName, basicProperties: null, body: body);
-            Console.WriteLine($"[x] Отправлено {message} в {queueName}");
+            Logger.Info($"Сообщение отправлено в очередь '{queueName}'");
         }
 
         public void AcknowledgeMessage(ulong deliveryTag)
@@ -48,6 +50,7 @@ namespace PostProcessor.RabbitMq
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            Logger.Info($"Запуск обработки сообщений из очереди '{FromPreProcessor}'");
             await ProcessMessagesAsync(stoppingToken);
         }
 
@@ -61,21 +64,35 @@ namespace PostProcessor.RabbitMq
                 var message = Encoding.UTF8.GetString(body);
                 var deserializedMessage = JsonSerializer.Deserialize<Message>(message);
 
-                Console.WriteLine($"Получено сообщение: {message}");
+                var flag = (deserializedMessage.Content != null) ? "NotNull" : "Null";
+                Logger.Info($"\nПолучено сообщение:\nId: {deserializedMessage.Id}\nContent: {flag}\nMessageCurrentTime: {deserializedMessage.MessageCurrentTime}");
 
                 try
                 {
-                    deserializedMessage.AnswerContent = "<b>Ваш запрос:</b></br><div style=\"margin-left: 20px;\">" + deserializedMessage.Content + "</div></br>" + "<b>Ответ:</b></br><div style=\"margin-left: 20px;\">" + deserializedMessage.AnswerContent + "</div>";
-                   // Отправка сообщения в WebCompBotQueue
-                    SendMessageToQueue(WebCompBotQueueName, JsonSerializer.Serialize(deserializedMessage));
- 
+                    Logger.Info($"Начало обработки сообщения с ID: {deserializedMessage.Id}");
+
+                    // Разбиение сообщения на части
+                    var messageParts = SplitMessage(deserializedMessage.Content, 200);
+
+                    int k = 0;
+                    foreach (var part in messageParts)
+                    {
+                        deserializedMessage.Content = part;
+                        deserializedMessage.MessageCurrentTime = DateTime.Now.ToString("dd:MM:yyyy HH:mm:ss");
+                        deserializedMessage.Id += "~" + k;
+                        k++;
+
+                        SendMessageToQueue(WebCompBotQueueName, JsonSerializer.Serialize(deserializedMessage));
+                        Logger.Info($"Отправлена {k} часть сообщения в очередь '{WebCompBotQueueName}'");
+                    }
+
                     // Подтверждение сообщения
                     AcknowledgeMessage(ea.DeliveryTag);
-                    Console.WriteLine($"Сообщение подтверждено с deliveryTag: {ea.DeliveryTag}");
+                    Logger.Info($"Сообщение подтверждено с deliveryTag: {ea.DeliveryTag}");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Произошла ошибка: {ex.Message}");
+                    Logger.Error($"Произошла ошибка при обработке сообщения с ID {deserializedMessage.Id}: {ex.Message}");
                     // Отклонение сообщения в случае ошибки
                     RejectMessage(ea.DeliveryTag, true);
                 }
@@ -89,16 +106,70 @@ namespace PostProcessor.RabbitMq
 
         public override void Dispose()
         {
-            _channel?.Close();
-            _connection?.Close();
-            base.Dispose();
+            try
+            {
+                _channel?.Close();
+                _connection?.Close();
+                Logger.Info("Соединение с RabbitMQ закрыто");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error($"Ошибка при закрытии соединения: {ex.Message}");
+            }
+            finally
+            {
+                base.Dispose();
+            }
         }
 
-        private class Message
+
+        private List<string> SplitMessage(string message, int maxLength)
         {
-            public string Id { get; set; } = string.Empty;
-            public string Content { get; set; } = string.Empty;
-            public string AnswerContent { get; set; } = string.Empty;
+            var messageParts = new List<string>();
+
+            // Разделители для разбиения сообщения
+            var delimiters = new[] { '.', '!', '?' };
+
+            while (message.Length > maxLength)
+            {
+                // Найти подходящий разделитель в пределах максимальной длины
+                var splitIndex = message.LastIndexOfAny(delimiters, maxLength);
+
+                // Если не удалось найти разделитель, разбиваем на фиксированную длину
+                if (splitIndex == -1)
+                {
+                    splitIndex = maxLength;
+                }
+
+                // Если разделитель найден, включаем его в сообщение
+                if (delimiters.Contains(message[splitIndex]))
+                {
+                    splitIndex++;
+                }
+
+                // Убираем пробелы перед и после сообщения
+                var part = message.Substring(0, splitIndex).Trim();
+                messageParts.Add(part);
+
+                // Оставшаяся часть сообщения
+                message = message.Substring(splitIndex).Trim();
+            }
+
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                messageParts.Add(message);
+            }
+
+            return messageParts;
+        }
+
+        // Класс для представления сообщения.
+        public class Message
+        {
+            public string Id { get; set; } = string.Empty; // Идентификатор сообщения
+            public string Content { get; set; } = string.Empty; // Содержимое сообщения
+            public string MessageCurrentTime { get; set; } = string.Empty; // Время отправки сообщения
+            public Boolean IsUserMessage { get; set; } = true; // Флаг User/Bot, True/False соответственно
         }
     }
 }
