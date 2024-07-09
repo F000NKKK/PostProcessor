@@ -74,12 +74,14 @@ namespace PostProcessor.RabbitMq
                     // Разбиение сообщения на части
                     var messageParts = SplitMessage(deserializedMessage.Content, 200);
 
+                    string id = deserializedMessage.Id;
+
                     int k = 0;
                     foreach (var part in messageParts)
                     {
                         deserializedMessage.Content = part;
                         deserializedMessage.MessageCurrentTime = DateTime.Now.ToString("dd:MM:yyyy HH:mm:ss");
-                        deserializedMessage.Id += "~" + k;
+                        deserializedMessage.Id = id + "~" + k;
                         k++;
 
                         SendMessageToQueue(WebCompBotQueueName, JsonSerializer.Serialize(deserializedMessage));
